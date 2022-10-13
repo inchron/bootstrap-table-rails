@@ -1,0 +1,62 @@
+#!/bin/bash
+
+set -e
+function onError() {
+  echo "Update failed. Error occurred at line $1"
+}
+trap 'onError $LINENO' ERR
+
+VERSION_FILE="lib/bootstrap/table/rails/version.rb"
+ORIGINAL_REPO="wenzhixin/bootstrap-table"
+VERSION_REGEX='^[0-9]+(\.[0-9]+)+$'
+
+_root_dir="$( cd "$(dirname "$0")/.." >/dev/null 2>&1 ; pwd -P )"
+_version_file="${_root_dir}/${VERSION_FILE}"
+
+_current_version=$(grep -E 'VERSION\s*=' "${_version_file}" | sed -n 's/.*VERSION\s*=\s*"\(.*\)"/\1/p')
+if [[ ! "$_current_version" =~ $VERSION_REGEX ]] ; then
+  echo "Update failed. Could not determine current version."
+  exit 1
+fi
+
+_latest_info=$( curl -s https://api.github.com/repos/${ORIGINAL_REPO}/releases/latest )
+_latest_version=$( echo $_latest_info | jq -r '.tag_name' | sed "s/v\s*//i" )
+if [[ ! "$_latest_version" =~ $VERSION_REGEX ]] ; then
+  echo "Update failed. Could not determine latest version."
+  exit 1
+fi
+
+if [[ $_current_version = $_latest_version ]] ; then
+  echo "Library is already up to date (Version $_latest_version)"
+  exit 0
+fi
+
+echo "Updating $ORIGINAL_REPO assets from $_current_version to $_latest_version."
+
+# download and extract assets
+_file_url=`echo $_latest_info | jq -r '.tarball_url'`
+_intermediate_folder_path="${_root_dir}/bootstrap-table-latest"
+_intermediate_file_path="$_intermediate_folder_path.tar.gz"
+mkdir $_intermediate_folder_path
+curl -L -o $_intermediate_file_path $_file_url
+tar -xf $_intermediate_file_path -C $_intermediate_folder_path
+_dist_path="$_intermediate_folder_path/`ls $_intermediate_folder_path`/dist"
+
+# remove min.css and min.js files
+find $_dist_path -name "*.min.css" -type f -delete
+find $_dist_path -name "*.min.js" -type f -delete
+
+# replace assets by latest version
+_asset_path="${_root_dir}/vendor/assets/javascripts/bootstrap-table"
+rm -r $_asset_path
+mv $_dist_path $_asset_path
+rm $_intermediate_file_path
+rm -r $_intermediate_folder_path
+
+sed -i "s/\(.*VERSION\s*=\s*\"\)\(.*\)\"/\1$_latest_version\"/" $_version_file
+
+git add "${_asset_path}/*"
+git add $_version_file
+git commit -m "Updated vendor assets of '$ORIGINAL_REPO' to latest version ($_latest_version)."
+
+echo "Updated successfully. Please push and tag you changes. New version is: '$_latest_version'."
